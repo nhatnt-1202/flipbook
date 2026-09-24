@@ -24,9 +24,9 @@ import { useSession } from "@/lib/auth";
 import {
   isFlipSoundMuted,
   playFlipSound,
+  prepareFlipSound,
   setFlipSoundMuted,
   subscribeFlipSoundMuted,
-  unlockFlipSound,
 } from "@/lib/flipSound";
 
 // Mỗi trang phải rộng ít nhất chừng này mới hiển thị 2 trang đôi; nhỏ hơn thì chuyển sang 1 trang (mobile).
@@ -99,7 +99,7 @@ export default function Flipbook({ book }: { book: Book }) {
 
     fit();
     preload(0);
-    unlockFlipSound(); // tải trước tiếng lật trang
+    prepareFlipSound(); // tải trước tiếng lật trang, mở khóa âm thanh ở thao tác đầu tiên
 
     import("page-flip").then(({ PageFlip }) => {
       if (cancelled) return;
@@ -203,17 +203,12 @@ export default function Flipbook({ book }: { book: Book }) {
     const onFullscreen = () => setFullscreen(!!document.fullscreenElement);
     window.addEventListener("resize", onResize);
     window.addEventListener("keydown", onKey);
-    // Trình duyệt chỉ cho phát âm thanh sau click/phím (lăn chuột không tính), nên mở khóa ở thao tác đầu tiên
-    window.addEventListener("pointerdown", unlockFlipSound);
-    window.addEventListener("keydown", unlockFlipSound);
     document.addEventListener("fullscreenchange", onFullscreen);
 
     return () => {
       cancelled = true;
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("pointerdown", unlockFlipSound);
-      window.removeEventListener("keydown", unlockFlipSound);
       document.removeEventListener("fullscreenchange", onFullscreen);
       el.removeEventListener("pointerdown", onPointerDown);
       el.removeEventListener("pointerup", onPointerUp);
