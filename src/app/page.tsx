@@ -11,7 +11,7 @@ import { supabase, type Book } from "@/lib/supabase";
 
 type Sort = "newest" | "oldest" | "title";
 
-// Trang chủ chỉ dành cho root; người được share link chỉ vào được /book/{id}
+// Trang chủ chỉ dành cho root; người được share link chỉ vào được /view/{id}
 export default function Home() {
   const session = useSession();
   if (session === undefined) {

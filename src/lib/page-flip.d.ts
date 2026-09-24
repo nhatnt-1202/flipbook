@@ -34,5 +34,19 @@ declare module "page-flip" {
     on(event: "changeState", cb: (e: { data: "read" | "flipping" | "user_fold" | "fold_corner" }) => void): this;
     on(event: "init" | "changeOrientation", cb: (e: { data: unknown }) => void): this;
     destroy(): void;
+    // Nội bộ thư viện (không có trong tài liệu), dùng cho hiệu ứng lật lui ở chế độ 1 trang
+    getRender(): { getRect(): { left: number; top: number; width: number; height: number; pageWidth: number } };
+    getFlipController(): FlipController;
+  }
+
+  type Point = { x: number; y: number };
+
+  export interface FlipController {
+    flip(globalPos: Point): void;
+    fold(globalPos: Point): void;
+    start(globalPos: Point): boolean;
+    setState(state: "read" | "flipping" | "user_fold" | "fold_corner"): void;
+    calc: { calc(pagePos: Point): boolean } | null;
+    animateFlippingTo(start: Point, dest: Point, isTurned: boolean, needReset?: boolean): void;
   }
 }

@@ -10,7 +10,7 @@ const getBook = cache(async (id: string) => {
   return data as Book | null;
 });
 
-export async function generateMetadata({ params }: PageProps<"/book/[id]">): Promise<Metadata> {
+export async function generateMetadata({ params }: PageProps<"/view/[id]">): Promise<Metadata> {
   const book = await getBook((await params).id);
   if (!book) return { title: "Không tìm thấy sách" };
   const cover = pageUrl(book, 1);
@@ -21,7 +21,7 @@ export async function generateMetadata({ params }: PageProps<"/book/[id]">): Pro
   };
 }
 
-export default async function BookPage({ params }: PageProps<"/book/[id]">) {
+export default async function BookPage({ params }: PageProps<"/view/[id]">) {
   const book = await getBook((await params).id);
   if (!book) notFound();
   return <Flipbook book={book} />;

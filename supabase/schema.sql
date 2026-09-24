@@ -1,11 +1,11 @@
 -- Chạy file này bằng "npm run db:setup" (hoặc dán vào Supabase Dashboard → SQL Editor).
 -- Phân quyền:
 --   • Tài khoản root (duy nhất, ghi trong bảng root_account): xem thư viện, upload, xóa.
---   • Người có link /book/{id}: chỉ lấy được đúng cuốn sách đó qua hàm get_book(id),
+--   • Người có link /view/{id}: chỉ lấy được đúng cuốn sách đó qua hàm get_book(id),
 --     không liệt kê được danh sách sách hay file trong Storage.
 
 create table if not exists public.books (
-  id          text primary key,            -- nanoid, cũng là slug trong link share /book/{id}
+  id          text primary key,            -- nanoid, cũng là slug trong link share /view/{id}
   title       text not null,
   page_count  int  not null,
   page_width  int  not null,               -- kích thước ảnh trang (px), dùng cho tỉ lệ flipbook
@@ -15,8 +15,8 @@ create table if not exists public.books (
   created_at  timestamptz not null default now()
 );
 
--- Slug tùy chỉnh cho link share /book/{slug} (chữ thường, số, gạch ngang). NULL = dùng id.
--- Link theo id vẫn luôn mở được, nên đổi slug không làm hỏng link cũ dạng /book/{id}.
+-- Slug tùy chỉnh cho link share /view/{slug} (chữ thường, số, gạch ngang). NULL = dùng id.
+-- Link theo id vẫn luôn mở được, nên đổi slug không làm hỏng link cũ dạng /view/{id}.
 alter table public.books add column if not exists slug text;
 create unique index if not exists books_slug_key on public.books (slug);
 alter table public.books drop constraint if exists books_slug_format;

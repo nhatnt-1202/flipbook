@@ -21,9 +21,9 @@ export type Book = {
   created_at: string;
 };
 
-// Đường dẫn link share: /book/{slug} nếu đã đặt, không thì /book/{id}. Link theo id luôn mở được.
+// Đường dẫn link share: /view/{slug} nếu đã đặt, không thì /view/{id}. Link theo id luôn mở được.
 export function bookPath(book: Pick<Book, "id" | "slug">) {
-  return `/book/${book.slug || book.id}`;
+  return `/view/${book.slug || book.id}`;
 }
 
 export const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;

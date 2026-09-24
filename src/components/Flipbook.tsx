@@ -131,6 +131,7 @@ export default function Flipbook({ book }: { book: Book }) {
       });
       flip.on("changeOrientation", () => setPortrait(flip.getOrientation() === "portrait"));
       flip.loadFromHTML(pages);
+      patchPortraitBack(flip); // flipController chỉ có sau loadFromHTML
       flipRef.current = flip;
     });
 
@@ -413,6 +414,77 @@ export default function Flipbook({ book }: { book: Book }) {
       </footer>
     </div>
   );
+}
+
+// Chế độ 1 trang (mobile): thư viện lật lui bằng cách kéo trang trước vào từ "trang trái" ảo — vùng đó nằm ngoài
+// màn hình nên chỉ thấy một trang phẳng trượt vào, không có nếp cong giấy.
+// Thay bằng lật tới chạy ngược: về ngay trang trước ở trạng thái đã lật hẳn sang trái, rồi đưa mép trang trở lại
+// bên phải (phủ lên trang đang xem). Nhờ vậy lật lui trông y như lật tới, chỉ ngược chiều.
+// Thư viện có 3 đường lật lui, vá cả 3:
+//   • flipPrev: nút ‹, phím ←, lăn chuột, chạm nhanh, vuốt nhanh
+//   • flipController.flip: nhấn giữ rồi thả ở nửa trái
+//   • flipController.fold: kéo trang bằng ngón tay / chuột
+function patchPortraitBack(flip: PageFlip) {
+  const fc = flip.getFlipController();
+  const libFlipPrev = flip.flipPrev.bind(flip);
+  const libFlip = fc.flip.bind(fc);
+  const libFold = fc.fold.bind(fc);
+
+  // Điểm chạm (tọa độ trong khung sách) có rơi vào vùng lật lui của thư viện không: 40% bên trái trang
+  const isBackPoint = (pos: { x: number }) => {
+    const rect = flip.getRender().getRect();
+    return pos.x - rect.left - rect.pageWidth <= (rect.pageWidth * 2) / 5;
+  };
+  const active = () => flip.getOrientation() === "portrait" && flip.getCurrentPageIndex() > 0;
+
+  flip.flipPrev = (corner = "top") => {
+    if (!active() || !flipBackPortrait(flip, corner)) libFlipPrev(corner);
+  };
+  fc.flip = (pos) => {
+    const rect = flip.getRender().getRect();
+    const corner = pos.y - rect.top >= rect.height / 2 ? "bottom" : "top";
+    if (!active() || !isBackPoint(pos) || !flipBackPortrait(flip, corner)) libFlip(pos);
+  };
+  fc.fold = (pos) => {
+    // Lần đầu chạm để kéo: đổi sang "lật tới trang trước"; các lần sau góc trang cứ bám theo ngón tay
+    if (!fc.calc && active() && isBackPoint(pos) && flip.getState() === "read") {
+      const index = flip.getCurrentPageIndex();
+      flip.turnToPage(index - 1);
+      if (!startForward(flip, pos.y)) {
+        flip.turnToPage(index);
+        return libFold(pos);
+      }
+    }
+    libFold(pos);
+  };
+}
+
+// Bắt đầu một lần lật tới từ mép phải (giống flipNext của thư viện) để trang hiện tại làm trang đang lật
+function startForward(flip: PageFlip, y: number) {
+  const fc = flip.getFlipController();
+  const rect = flip.getRender().getRect();
+  return fc.start({ x: rect.left + rect.pageWidth * 2 - 10, y }) && !!fc.calc;
+}
+
+function flipBackPortrait(flip: PageFlip, corner: "top" | "bottom") {
+  const index = flip.getCurrentPageIndex();
+  if (index <= 0 || flip.getState() !== "read") return false;
+  const fc = flip.getFlipController();
+  const rect = flip.getRender().getRect();
+
+  flip.turnToPage(index - 1);
+  if (!startForward(flip, rect.top + (corner === "top" ? 1 : rect.height - 2)) || !fc.calc) {
+    flip.turnToPage(index);
+    return false;
+  }
+  fc.setState("flipping");
+  // Ngược đường đi của flipNext: từ vị trí đã lật hẳn (-pageWidth) về gần góc phải
+  const margin = rect.height / 10;
+  const from = { x: -rect.pageWidth, y: corner === "bottom" ? rect.height : 0 };
+  const to = { x: rect.pageWidth - margin, y: corner === "bottom" ? rect.height - margin : margin };
+  fc.calc.calc(from);
+  fc.animateFlippingTo(from, to, false);
+  return true;
 }
 
 const toolClass =

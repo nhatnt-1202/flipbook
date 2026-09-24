@@ -3,7 +3,7 @@
 Upload PDF → sách lật trang → chia sẻ link.
 
 - **Root** (1 tài khoản duy nhất): đăng nhập ở trang chủ để xem thư viện, upload, xóa.
-- **Người có link** `/book/{id}`: chỉ xem được đúng cuốn sách đó, không vào được thư viện hay sách khác.
+- **Người có link** `/view/{id}`: chỉ xem được đúng cuốn sách đó, không vào được thư viện hay sách khác.
 
 - **Next.js 16** + Tailwind
 - **pdf.js** render từng trang PDF thành ảnh WebP ngay trong trình duyệt lúc upload
@@ -36,7 +36,7 @@ Upload PDF → sách lật trang → chia sẻ link.
 |---|---|
 | `src/app/page.tsx` | Trang chủ (cần đăng nhập root): upload + danh sách tất cả sách + tìm kiếm |
 | `src/components/Login.tsx` | Form đăng nhập root (Supabase Auth) |
-| `src/app/book/[id]/page.tsx` | Trang xem flipbook (link share), có OG image là ảnh bìa |
+| `src/app/view/[id]/page.tsx` | Trang xem flipbook (link share), có OG image là ảnh bìa |
 | `src/components/Uploader.tsx` | Render PDF → ảnh, upload lên Storage, lưu vào `books` |
 | `src/components/Flipbook.tsx` | Viewer lật trang, toolbar, phím ← → |
 | `src/lib/pdf.ts` | Chuyển PDF thành ảnh bằng pdf.js |

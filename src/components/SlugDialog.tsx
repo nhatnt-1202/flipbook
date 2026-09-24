@@ -80,7 +80,7 @@ export default function SlugDialog({
                 invalid ? "ring-red-400 focus-within:ring-red-500" : "ring-stone-200 focus-within:ring-brand-500 dark:ring-white/10"
               }`}
             >
-              <span className="shrink-0 pl-3 text-stone-400">{origin}/book/</span>
+              <span className="shrink-0 pl-3 text-stone-400">{origin}/view/</span>
               <input
                 autoFocus
                 value={value}
