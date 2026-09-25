@@ -123,7 +123,7 @@ export default function Flipbook({ book, preview = false }: { book: Book; previe
     if (sound !== "off" && !isFlipSoundMuted()) playFlipSound(sound);
   }, [sound]);
 
-  // Nhạc nền: trình duyệt chỉ cho phát sau thao tác đầu tiên của người xem
+  // Nhạc nền: thử phát ngay khi mở sách; trình duyệt chặn tự phát thì chờ thao tác đầu tiên của người xem
   const musicSrc = settings.music.src;
   const musicVolume = settings.music.volume;
   useEffect(() => {
@@ -136,6 +136,7 @@ export default function Flipbook({ book, preview = false }: { book: Book; previe
       audio.play().then(stop, () => {});
     };
     events.forEach((e) => window.addEventListener(e, start, true));
+    start();
     return stop;
   }, [musicSrc, musicVolume]);
 
