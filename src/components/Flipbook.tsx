@@ -1,24 +1,25 @@
 "use client";
 
-import "page-flip/src/Style/stPageFlip.css";
 import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
   Download,
+  EllipsisVertical,
   LayoutGrid,
   Loader2,
   Maximize,
   Minimize,
+  Music,
+  PencilRuler,
   Share2,
   Volume2,
   VolumeX,
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { PageFlip } from "page-flip";
-import { pageUrl, pdfUrl, type Book } from "@/lib/supabase";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { pageFiles, pageUrl, pdfUrl, type Book } from "@/lib/supabase";
 import { useToast } from "@/components/Toast";
 import { useSession } from "@/lib/auth";
 import {
@@ -28,151 +29,142 @@ import {
   setFlipSoundMuted,
   subscribeFlipSoundMuted,
 } from "@/lib/flipSound";
+import { parseElements, type BookElement } from "@/lib/elements";
+import { FONT_FAMILY, PAGE_FLIP_STYLES, backgroundCss, parseSettings } from "@/lib/settings";
+import ElementLayer, { ElementPopup } from "@/components/elements/ElementLayer";
+import type { ElementAction } from "@/components/elements/ElementContent";
+import PageFlipView, { FLIP_MS } from "@/components/viewer/PageFlipView";
+import SlideView from "@/components/viewer/SlideView";
+import LeadGate, { leadDone } from "@/components/viewer/LeadGate";
+import type { ViewHandle } from "@/components/viewer/types";
 
-// Mỗi trang phải rộng ít nhất chừng này mới hiển thị 2 trang đôi; nhỏ hơn thì chuyển sang 1 trang (mobile).
-const MIN_PAGE_WIDTH = 300;
-// Số trang tải trước quanh trang hiện tại
-const PRELOAD_BEHIND = 2;
-const PRELOAD_AHEAD = 6;
-// Thời gian lật một trang (ms); hiệu ứng trượt bìa vào giữa dùng cùng thời gian để chạy đồng bộ
-const FLIP_MS = 800;
+// Màu giao diện viewer theo theme của sách
+const THEME = {
+  dark: {
+    root: "text-zinc-100",
+    muted: "text-zinc-400",
+    tool: "text-zinc-300 hover:bg-white/10 hover:text-white",
+    toolActive: "bg-white/15 text-white",
+    panel: "border-white/10 bg-zinc-900/95",
+    pill: "bg-white/[0.07] ring-white/10",
+    nav: "bg-white/10 text-white ring-white/10 hover:bg-white/20",
+    track: "rgb(255 255 255 / 0.18)",
+  },
+  light: {
+    root: "text-zinc-900",
+    muted: "text-zinc-500",
+    tool: "text-zinc-600 hover:bg-black/5 hover:text-zinc-900",
+    toolActive: "bg-black/10 text-zinc-900",
+    panel: "border-black/10 bg-white/95",
+    pill: "bg-white/70 ring-black/10",
+    nav: "bg-white/70 text-zinc-800 ring-black/10 hover:bg-white",
+    track: "rgb(0 0 0 / 0.15)",
+  },
+};
 
-export default function Flipbook({ book }: { book: Book }) {
+// preview: đang xem thử trong editor — ẩn đường về thư viện / nút chỉnh sửa để không rời editor, form lead không ghi DB
+export default function Flipbook({ book, preview = false }: { book: Book; preview?: boolean }) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
-  const sizerRef = useRef<HTMLDivElement>(null);
-  const flipRef = useRef<PageFlip | null>(null);
+  const viewRef = useRef<ViewHandle | null>(null);
+  const musicRef = useRef<HTMLAudioElement>(null);
   const [page, setPage] = useState(0);
   const [portrait, setPortrait] = useState(false);
-  const [ready, setReady] = useState({ flip: false, cover: false });
+  const [ready, setReady] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [thumbsOpen, setThumbsOpen] = useState(false);
-  const [flipState, setFlipState] = useState("read");
+  const [popup, setPopup] = useState<ElementAction | null>(null);
+  const [musicPlaying, setMusicPlaying] = useState(false);
+  const [leadPassed, setLeadPassed] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const muted = useSyncExternalStore(subscribeFlipSoundMuted, isFlipSoundMuted, () => false);
   const notify = useToast();
   const session = useSession();
-  const total = book.page_count;
 
-  // Tính kích thước sách vừa khít khung hiển thị. page-flip tự suy chiều cao từ chiều rộng container.
-  const fit = useCallback(() => {
-    const stage = stageRef.current;
-    const sizer = sizerRef.current;
-    if (!stage || !sizer) return;
-    const ratio = book.page_width / book.page_height;
-    // clientWidth/Height tính cả padding, trừ ra để sách không tràn vào vùng nút điều hướng
-    const cs = getComputedStyle(stage);
-    const w = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    const h = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    let width = Math.min(w, h * ratio * 2);
-    if (width < MIN_PAGE_WIDTH * 2) width = Math.min(w, h * ratio);
-    sizer.style.width = `${Math.floor(width)}px`;
-  }, [book.page_width, book.page_height]);
+  const settings = useMemo(() => parseSettings(book.settings), [book.settings]);
+  const t = THEME[settings.theme];
+  const pageUrls = useMemo(
+    () => pageFiles(book).map((_, i) => pageUrl(book, i + 1)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [book.id, book.pages, book.page_count, book.image_ext],
+  );
+  const total = pageUrls.length;
+  const byPage = useMemo(() => {
+    const map = new Map<number, BookElement[]>();
+    for (const el of parseElements(book.elements)) {
+      if (!map.has(el.page)) map.set(el.page, []);
+      map.get(el.page)!.push(el);
+    }
+    return map;
+  }, [book.elements]);
 
+  // Đã gửi form lead trên trình duyệt này (xem thử thì luôn hỏi)
+  const leadStored = useSyncExternalStore(
+    noopSubscribe,
+    () => !preview && leadDone(book.id),
+    () => false,
+  );
+
+  // Chế độ 2 trang + bìa đơn: trang 0 đứng một mình, sau đó là cặp (1,2), (3,4)...
+  const spread = !portrait && page > 0 && page < total - 1;
+  const label = spread ? `${page + 1}–${Math.min(page + 2, total)}` : `${page + 1}`;
+  const atStart = page === 0;
+  const atEnd = page >= total - (spread ? 2 : 1);
+  const progress = total > 1 ? (page / (total - 1)) * 100 : 100;
+  const lastVisible = spread ? page + 2 : page + 1; // số trang (từ 1) lớn nhất đang hiện
+  const lead = settings.lead;
+  const gate = lead.enabled && !leadStored && !leadPassed && (lead.page <= 0 || lastVisible >= lead.page);
+
+  // ---------- Âm thanh ----------
+  const sound = settings.sound;
   useEffect(() => {
-    let cancelled = false;
-    const sizer = sizerRef.current!;
-    // page-flip xóa luôn element gốc khi destroy(), nên tạo element mới mỗi lần mount
-    const el = document.createElement("div");
-    sizer.appendChild(el);
+    if (sound !== "off") prepareFlipSound(); // tải trước tiếng lật trang, mở khóa âm thanh ở thao tác đầu tiên
+  }, [sound]);
+  const onFlip = useCallback(() => {
+    if (sound !== "off" && !isFlipSoundMuted()) playFlipSound(sound);
+  }, [sound]);
 
-    const imgs: HTMLImageElement[] = [];
-    const pages = Array.from({ length: book.page_count }, (_, i) => {
-      const div = document.createElement("div");
-      div.className = "bg-white";
-      if (i === 0 || i === book.page_count - 1) div.dataset.density = "hard";
-      const img = document.createElement("img");
-      img.dataset.src = pageUrl(book, i + 1);
-      img.alt = `Trang ${i + 1}`;
-      img.draggable = false;
-      img.className = "block h-full w-full object-contain select-none";
-      div.appendChild(img);
-      imgs.push(img);
-      return div;
-    });
-    imgs[0].onload = imgs[0].onerror = () => !cancelled && setReady((r) => ({ ...r, cover: true }));
-
-    const preload = (index: number) => {
-      for (let i = Math.max(0, index - PRELOAD_BEHIND); i <= Math.min(imgs.length - 1, index + PRELOAD_AHEAD); i++) {
-        if (!imgs[i].src) imgs[i].src = imgs[i].dataset.src!;
-      }
+  // Nhạc nền: trình duyệt chỉ cho phát sau thao tác đầu tiên của người xem
+  const musicSrc = settings.music.src;
+  const musicVolume = settings.music.volume;
+  useEffect(() => {
+    const audio = musicRef.current;
+    if (!audio || !musicSrc) return;
+    audio.volume = Math.max(0, Math.min(1, musicVolume));
+    const events = ["pointerup", "keydown", "touchend"] as const;
+    const stop = () => events.forEach((e) => window.removeEventListener(e, start, true));
+    const start = () => {
+      audio.play().then(stop, () => {});
     };
+    events.forEach((e) => window.addEventListener(e, start, true));
+    return stop;
+  }, [musicSrc, musicVolume]);
 
-    fit();
-    preload(0);
-    prepareFlipSound(); // tải trước tiếng lật trang, mở khóa âm thanh ở thao tác đầu tiên
+  function toggleMusic() {
+    const audio = musicRef.current;
+    if (!audio) return;
+    if (audio.paused) audio.play().catch(() => {});
+    else audio.pause();
+  }
 
-    import("page-flip").then(({ PageFlip }) => {
-      if (cancelled) return;
-      const flip = new PageFlip(el, {
-        width: book.page_width,
-        height: book.page_height,
-        size: "stretch",
-        minWidth: MIN_PAGE_WIDTH,
-        maxWidth: 4000,
-        minHeight: 100,
-        maxHeight: 6000,
-        showCover: true,
-        usePortrait: true,
-        mobileScrollSupport: false,
-        maxShadowOpacity: 0.35,
-        flippingTime: FLIP_MS,
-      });
-      flip.on("flip", (e) => {
-        setPage(e.data);
-        preload(e.data);
-      });
-      flip.on("changeState", (e) => {
-        setFlipState(e.data);
-        if (e.data === "flipping" && !isFlipSoundMuted()) playFlipSound();
-      });
-      flip.on("init", () => {
-        setPortrait(flip.getOrientation() === "portrait");
-        setReady((r) => ({ ...r, flip: true }));
-      });
-      flip.on("changeOrientation", () => setPortrait(flip.getOrientation() === "portrait"));
-      flip.loadFromHTML(pages);
-      patchPortraitBack(flip); // flipController chỉ có sau loadFromHTML
-      flipRef.current = flip;
-    });
-
-    // Chạm/click vào nửa phải sách → trang sau, nửa trái → trang trước.
-    // Thư viện tự xử lý click chuột, nhưng bỏ qua cú chạm nhanh (<250ms) trên mobile, nên bổ sung bằng pointer events.
-    let down: { x: number; y: number; t: number; state: string } | null = null;
-    const onPointerDown = (e: PointerEvent) => {
-      down = { x: e.clientX, y: e.clientY, t: Date.now(), state: flipRef.current?.getState() ?? "read" };
-    };
-    const onPointerUp = (e: PointerEvent) => {
-      const start = down;
-      down = null;
-      if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 8 || Date.now() - start.t > 500) return;
-      const rect = el.getBoundingClientRect();
-      const corner = e.clientY - rect.top > rect.height / 2 ? "bottom" : "top";
-      const next = e.clientX > rect.left + rect.width / 2;
-      // Đợi thư viện xử lý mouseup/touchend trước: nếu nó đã tự lật thì không lật thêm lần nữa
-      setTimeout(() => {
-        const flip = flipRef.current;
-        if (!flip) return;
-        const state = flip.getState();
-        if (state === "user_fold" || (state === "flipping" && start.state !== "flipping")) return;
-        if (next) flip.flipNext(corner);
-        else flip.flipPrev(corner);
-      }, 0);
-    };
-    el.addEventListener("pointerdown", onPointerDown);
-    el.addEventListener("pointerup", onPointerUp);
-
+  // ---------- Phím, lăn chuột, toàn màn hình ----------
+  const gateRef = useRef(gate);
+  useEffect(() => {
+    gateRef.current = gate;
+  });
+  useEffect(() => {
+    const root = rootRef.current!;
     // Lăn chuột / vuốt 2 ngón trên touchpad → lật trang (xuống/phải = trang sau).
     // Touchpad bắn hàng loạt sự kiện (kèm quán tính), nên sau mỗi lần lật sẽ khóa cho tới khi
     // người dùng dừng lăn một chút, hoặc đã lật xong và có một nấc lăn mạnh mới (chuột thường).
-    const root = rootRef.current!;
     let wheelAcc = 0;
     let lastWheel = 0;
     let lockedAt = 0;
     const onWheel = (e: WheelEvent) => {
-      if (e.ctrlKey || (e.target as Element).closest("aside")) return; // giữ zoom trình duyệt và cuộn danh sách trang
+      // giữ zoom trình duyệt, cuộn danh sách trang, cuộn trong popup / iframe
+      if (e.ctrlKey || (e.target as Element).closest("aside, [role=dialog]")) return;
       e.preventDefault();
-      const flip = flipRef.current;
-      if (!flip) return;
+      const view = viewRef.current;
+      if (!view || gateRef.current) return;
       const now = Date.now();
       const quiet = now - lastWheel > 150;
       lastWheel = now;
@@ -183,41 +175,30 @@ export default function Flipbook({ book }: { book: Book }) {
         lockedAt = 0;
         wheelAcc = 0;
       }
-      if (flip.getState() !== "read") return;
+      if (view.busy()) return;
       wheelAcc += delta;
       if (Math.abs(wheelAcc) < 30) return;
-      if (wheelAcc > 0) flip.flipNext();
-      else flip.flipPrev();
+      if (wheelAcc > 0) view.next();
+      else view.prev();
       wheelAcc = 0;
       lockedAt = now;
     };
-    root.addEventListener("wheel", onWheel, { passive: false });
-
-    const onResize = () => fit();
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
-      if (e.key === "ArrowRight") flipRef.current?.flipNext();
-      if (e.key === "ArrowLeft") flipRef.current?.flipPrev();
+      if ((e.target as Element).closest?.("input, textarea, select, [contenteditable]") || gateRef.current) return;
+      if (e.key === "ArrowRight") viewRef.current?.next();
+      if (e.key === "ArrowLeft") viewRef.current?.prev();
       if (e.key === "Escape") setThumbsOpen(false);
     };
     const onFullscreen = () => setFullscreen(!!document.fullscreenElement);
-    window.addEventListener("resize", onResize);
+    root.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("keydown", onKey);
     document.addEventListener("fullscreenchange", onFullscreen);
-
     return () => {
-      cancelled = true;
-      window.removeEventListener("resize", onResize);
+      root.removeEventListener("wheel", onWheel);
       window.removeEventListener("keydown", onKey);
       document.removeEventListener("fullscreenchange", onFullscreen);
-      el.removeEventListener("pointerdown", onPointerDown);
-      el.removeEventListener("pointerup", onPointerUp);
-      root.removeEventListener("wheel", onWheel);
-      flipRef.current?.destroy();
-      flipRef.current = null;
-      el.remove();
     };
-  }, [book, fit]);
+  }, []);
 
   async function share() {
     const url = window.location.href;
@@ -234,114 +215,184 @@ export default function Flipbook({ book }: { book: Book }) {
     else rootRef.current?.requestFullscreen();
   }
 
-  const goTo = (i: number) => flipRef.current?.turnToPage(Math.max(0, Math.min(total - 1, i)));
+  const goTo = (i: number) => viewRef.current?.goTo(i);
 
-  const isLoading = !(ready.flip && ready.cover);
-  // Chế độ 2 trang + bìa đơn: trang 0 đứng một mình, sau đó là cặp (1,2), (3,4)...
-  const spread = !portrait && page > 0 && page < total - 1;
-  const label = spread ? `${page + 1}–${Math.min(page + 2, total)}` : `${page + 1}`;
-  const atStart = page === 0;
-  const atEnd = page >= total - (spread ? 2 : 1);
-  const progress = total > 1 ? (page / (total - 1)) * 100 : 100;
+  const onElementAction = useCallback((a: ElementAction) => {
+    if (a.kind === "page") viewRef.current?.flip(a.page - 1);
+    else setPopup(a);
+  }, []);
+  const closePopup = useCallback(() => setPopup(null), []);
+  const onReady = useCallback(() => setReady(true), []);
 
-  // Chế độ 2 trang: bìa trước chỉ chiếm nửa phải, bìa sau (khi tổng số trang chẵn) chỉ chiếm nửa trái.
-  // Dịch sách 1/4 chiều rộng để trang đơn nằm giữa; khi bắt đầu lật ra khỏi bìa thì trượt về vị trí 2 trang.
-  const onCover = !portrait && page === 0;
-  const onBackCover = !portrait && total > 1 && total % 2 === 0 && page === total - 1;
-  const leaving = flipState === "flipping";
-  const shift = leaving ? 0 : onCover ? -25 : onBackCover ? 25 : 0;
+  // Trang đang hiện (index từ 0): chỉ các trang này mới nhúng video / phát âm thanh
+  const isVisible = (i: number) => i === page || (spread && i === page + 1);
+  const renderLayer = (i: number) => {
+    const els = byPage.get(i + 1);
+    return els ? <ElementLayer elements={els} active={isVisible(i) && !gate} onAction={onElementAction} /> : null;
+  };
+
+  const View = PAGE_FLIP_STYLES.includes(settings.flip) ? PageFlipView : SlideView;
+  const toolClass = `flex size-9 items-center justify-center rounded-lg transition ${t.tool}`;
 
   return (
     <div
       ref={rootRef}
-      className="relative flex h-dvh flex-col overflow-hidden bg-[radial-gradient(ellipse_at_center,#3f3f46_0%,#18181b_75%)] text-zinc-100"
+      className={`relative flex h-dvh flex-col overflow-hidden ${t.root}`}
+      style={
+        {
+          background: backgroundCss(settings.background, settings.theme),
+          fontFamily: FONT_FAMILY[settings.font],
+          "--accent": settings.accent,
+          "--slider-track": t.track,
+          "--page-brightness": settings.brightness,
+        } as React.CSSProperties
+      }
     >
+      {settings.background.kind === "blur" && total > 0 && (
+        // Ảnh bìa làm mờ phủ kín nền
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={pageUrls[0]} alt="" aria-hidden className="pointer-events-none absolute inset-0 h-full w-full scale-110 object-cover brightness-50 blur-3xl" />
+      )}
+
       {/* Thanh trên */}
       <header className="relative z-20 flex h-14 shrink-0 items-center gap-2 px-2 sm:px-4">
         {/* Chỉ root mới có đường về thư viện; người được share link chỉ xem cuốn này */}
-        {session && (
-          <Link
-            href="/"
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-sm text-zinc-300 transition hover:bg-white/10 hover:text-white"
-          >
+        {session && !preview && (
+          <Link href="/" className={`flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-sm transition ${t.tool}`}>
             <ArrowLeft className="size-4" />
             <span className="hidden sm:inline">Thư viện</span>
           </Link>
         )}
+        {settings.logo && <Logo src={settings.logo} href={settings.logoHref} />}
         <div className="min-w-0 flex-1 text-center">
           <h1 className="truncate text-sm font-medium sm:text-[15px]" title={book.title}>
             {book.title}
           </h1>
-          <p className="text-xs text-zinc-400">{total} trang</p>
+          <p className={`truncate text-xs ${t.muted}`}>
+            {total} trang
+            {settings.branding && (
+              <>
+                {" · "}
+                <a href="/" target="_blank" rel="noreferrer" className="hover:underline">
+                  Tạo bằng Flipbook
+                </a>
+              </>
+            )}
+          </p>
         </div>
         <div className="flex items-center">
-          <ToolButton label="Danh sách trang" active={thumbsOpen} onClick={() => setThumbsOpen((v) => !v)}>
+          {session && !preview && (
+            <Link href={`/edit/${book.id}`} title="Chỉnh sửa" aria-label="Chỉnh sửa" className={`${toolClass} max-sm:hidden`}>
+              <PencilRuler className="size-[18px]" />
+            </Link>
+          )}
+          <ToolButton label="Danh sách trang" active={thumbsOpen} onClick={() => setThumbsOpen((v) => !v)} className={toolClass} activeClass={t.toolActive}>
             <LayoutGrid className="size-[18px]" />
           </ToolButton>
-          <ToolButton label={muted ? "Bật âm thanh lật trang" : "Tắt âm thanh lật trang"} onClick={() => setFlipSoundMuted(!muted)}>
-            {muted ? <VolumeX className="size-[18px]" /> : <Volume2 className="size-[18px]" />}
-          </ToolButton>
-          <ToolButton label="Chia sẻ" onClick={share}>
+          {musicSrc && (
+            <ToolButton label={musicPlaying ? "Tắt nhạc nền" : "Bật nhạc nền"} active={musicPlaying} onClick={toggleMusic} className={`${toolClass} max-sm:hidden`} activeClass={t.toolActive}>
+              <Music className="size-[18px]" />
+            </ToolButton>
+          )}
+          {sound !== "off" && (
+            <ToolButton label={muted ? "Bật âm thanh lật trang" : "Tắt âm thanh lật trang"} onClick={() => setFlipSoundMuted(!muted)} className={`${toolClass} max-sm:hidden`}>
+              {muted ? <VolumeX className="size-[18px]" /> : <Volume2 className="size-[18px]" />}
+            </ToolButton>
+          )}
+          <ToolButton label="Chia sẻ" onClick={share} className={`${toolClass} max-sm:hidden`}>
             <Share2 className="size-[18px]" />
           </ToolButton>
           {book.has_pdf && (
-            <a
-              href={pdfUrl(book)}
-              target="_blank"
-              rel="noreferrer"
-              title="Tải PDF gốc"
-              aria-label="Tải PDF gốc"
-              className={toolClass}
-            >
+            <a href={pdfUrl(book)} target="_blank" rel="noreferrer" title="Tải PDF gốc" aria-label="Tải PDF gốc" className={`${toolClass} max-sm:hidden`}>
               <Download className="size-[18px]" />
             </a>
           )}
-          <ToolButton label={fullscreen ? "Thoát toàn màn hình" : "Toàn màn hình"} onClick={toggleFullscreen} className="hidden sm:flex">
+          <ToolButton label={fullscreen ? "Thoát toàn màn hình" : "Toàn màn hình"} onClick={toggleFullscreen} className={`${toolClass} max-sm:hidden`}>
             {fullscreen ? <Minimize className="size-[18px]" /> : <Maximize className="size-[18px]" />}
           </ToolButton>
+
+          {/* Màn hình hẹp: gom các nút phụ vào menu để tên sách không bị cắt */}
+          <div className="relative sm:hidden">
+            <ToolButton label="Thêm" active={moreOpen} onClick={() => setMoreOpen((v) => !v)} className={toolClass} activeClass={t.toolActive}>
+              <EllipsisVertical className="size-[18px]" />
+            </ToolButton>
+            {moreOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setMoreOpen(false)} />
+                <div
+                  role="menu"
+                  onClick={() => setMoreOpen(false)}
+                  className={`absolute top-11 right-0 z-40 flex w-56 flex-col rounded-xl border p-1.5 shadow-xl backdrop-blur-xl [animation:fade-in_.12s] ${t.panel}`}
+                >
+                  {session && !preview && (
+                    <Link href={`/edit/${book.id}`} role="menuitem" className={`${menuItem} ${t.tool}`}>
+                      <PencilRuler className="size-4" /> Chỉnh sửa
+                    </Link>
+                  )}
+                  {musicSrc && (
+                    <button type="button" role="menuitem" onClick={toggleMusic} className={`${menuItem} ${t.tool}`}>
+                      <Music className="size-4" /> {musicPlaying ? "Tắt nhạc nền" : "Bật nhạc nền"}
+                    </button>
+                  )}
+                  {sound !== "off" && (
+                    <button type="button" role="menuitem" onClick={() => setFlipSoundMuted(!muted)} className={`${menuItem} ${t.tool}`}>
+                      {muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
+                      {muted ? "Bật tiếng lật trang" : "Tắt tiếng lật trang"}
+                    </button>
+                  )}
+                  <button type="button" role="menuitem" onClick={share} className={`${menuItem} ${t.tool}`}>
+                    <Share2 className="size-4" /> Chia sẻ
+                  </button>
+                  {book.has_pdf && (
+                    <a href={pdfUrl(book)} target="_blank" rel="noreferrer" role="menuitem" className={`${menuItem} ${t.tool}`}>
+                      <Download className="size-4" /> Tải PDF gốc
+                    </a>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
       {/* Khu vực sách */}
       <div className="relative flex min-h-0 flex-1">
-        <div ref={stageRef} className="relative flex min-w-0 flex-1 items-center justify-center px-3 py-2 sm:px-20 sm:py-4">
-          <div
-            ref={sizerRef}
-            className={`cursor-pointer select-none ${isLoading ? "opacity-0" : "opacity-100"}`}
-            style={{
-              transform: `translateX(${shift}%)`,
-              transition: `transform ${FLIP_MS}ms cubic-bezier(0.4, 0, 0.2, 1), opacity 500ms`,
-            }}
-          />
-          {isLoading && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm text-zinc-400">
-              <Loader2 className="size-7 animate-spin text-zinc-300" />
-              Đang mở sách…
-            </div>
-          )}
-        </div>
+        <View
+          key={settings.flip}
+          book={book}
+          settings={settings}
+          pageUrls={pageUrls}
+          renderLayer={renderLayer}
+          onPage={setPage}
+          onPortrait={setPortrait}
+          onReady={onReady}
+          onFlip={onFlip}
+          handleRef={viewRef}
+        />
+        {!ready && (
+          <div className={`pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm ${t.muted}`}>
+            <Loader2 className="size-7 animate-spin" />
+            Đang mở sách…
+          </div>
+        )}
 
-        <NavButton side="left" disabled={atStart} onClick={() => flipRef.current?.flipPrev()} />
-        <NavButton side="right" disabled={atEnd} onClick={() => flipRef.current?.flipNext()} />
+        <NavButton side="left" disabled={atStart} onClick={() => viewRef.current?.prev()} className={t.nav} />
+        <NavButton side="right" disabled={atEnd} onClick={() => viewRef.current?.next()} className={t.nav} />
 
         {/* Bảng thumbnail */}
         {thumbsOpen && (
           <>
             <div className="absolute inset-0 z-20 bg-black/40 [animation:fade-in_.15s] sm:hidden" onClick={() => setThumbsOpen(false)} />
-            <aside className="absolute inset-y-0 right-0 z-30 flex w-72 max-w-[85vw] flex-col border-l border-white/10 bg-zinc-900/95 backdrop-blur-xl [animation:fade-in_.15s]">
+            <aside className={`absolute inset-y-0 right-0 z-30 flex w-72 max-w-[85vw] flex-col border-l backdrop-blur-xl [animation:fade-in_.15s] ${t.panel}`}>
               <div className="flex items-center justify-between px-4 py-3">
                 <span className="text-sm font-medium">Tất cả trang</span>
-                <button
-                  onClick={() => setThumbsOpen(false)}
-                  className="rounded-md p-1 text-zinc-400 hover:bg-white/10 hover:text-white"
-                  aria-label="Đóng"
-                >
+                <button onClick={() => setThumbsOpen(false)} className={`rounded-md p-1 ${t.tool}`} aria-label="Đóng">
                   <X className="size-4" />
                 </button>
               </div>
               <div className="grid flex-1 grid-cols-2 content-start gap-3 overflow-y-auto px-4 pb-4">
-                {Array.from({ length: total }, (_, i) => {
-                  const current = i === page || (spread && i === page + 1);
+                {pageUrls.map((url, i) => {
+                  const current = isVisible(i);
                   return (
                     <button
                       key={i}
@@ -352,15 +403,16 @@ export default function Flipbook({ book }: { book: Book }) {
                       className="group text-center"
                     >
                       <div
-                        className={`overflow-hidden rounded bg-zinc-800 ring-2 transition ${
-                          current ? "ring-brand-400" : "ring-transparent group-hover:ring-white/30"
-                        }`}
-                        style={{ aspectRatio: `${book.page_width} / ${book.page_height}` }}
+                        className={`overflow-hidden rounded bg-zinc-800 ring-2 transition ${current ? "" : "ring-transparent group-hover:ring-white/30"}`}
+                        style={{
+                          aspectRatio: `${book.page_width} / ${book.page_height}`,
+                          ...(current ? { "--tw-ring-color": "var(--accent)" } : {}),
+                        } as React.CSSProperties}
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={pageUrl(book, i + 1)} alt="" loading="lazy" className="h-full w-full object-cover" />
+                        <img src={url} alt="" loading="lazy" className="h-full w-full object-cover" />
                       </div>
-                      <span className={`mt-1 block text-xs ${current ? "font-medium text-brand-400" : "text-zinc-400"}`}>
+                      <span className={`mt-1 block text-xs ${current ? "font-medium" : t.muted}`} style={current ? { color: "var(--accent)" } : undefined}>
                         {i + 1}
                       </span>
                     </button>
@@ -372,16 +424,35 @@ export default function Flipbook({ book }: { book: Book }) {
         )}
       </div>
 
+      <ElementPopup action={popup} onClose={closePopup} />
+      {gate && (
+        <LeadGate
+          bookId={book.id}
+          form={lead}
+          page={lead.page}
+          preview={preview}
+          onDone={() => setLeadPassed(true)}
+          onSkip={() => setLeadPassed(true)}
+        />
+      )}
+      {musicSrc && (
+        <audio
+          ref={musicRef}
+          src={musicSrc}
+          loop
+          preload="none"
+          onPlay={() => setMusicPlaying(true)}
+          onPause={() => setMusicPlaying(false)}
+        />
+      )}
+
       {/* Thanh dưới */}
       {/* Máy có chuột: chỉ hiện khi rê chuột vào vùng dưới cùng. Màn hình cảm ứng không có hover nên luôn hiện. */}
       <footer className="group relative z-10 flex h-16 shrink-0 items-center justify-center px-4">
-        <div className="flex w-full max-w-lg items-center gap-3 rounded-full bg-white/[0.07] px-4 py-2 ring-1 ring-white/10 backdrop-blur transition-opacity duration-300 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100">
-          <button
-            onClick={() => flipRef.current?.flipPrev()}
-            disabled={atStart}
-            className="rounded-full p-1 text-zinc-300 hover:text-white disabled:opacity-30 sm:hidden"
-            aria-label="Trang trước"
-          >
+        <div
+          className={`flex w-full max-w-lg items-center gap-3 rounded-full px-4 py-2 ring-1 backdrop-blur transition-opacity duration-300 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100 ${t.pill}`}
+        >
+          <button onClick={() => viewRef.current?.prev()} disabled={atStart} className={`rounded-full p-1 disabled:opacity-30 sm:hidden ${t.tool}`} aria-label="Trang trước">
             <ChevronLeft className="size-5" />
           </button>
           <input
@@ -394,15 +465,10 @@ export default function Flipbook({ book }: { book: Book }) {
             className="page-slider flex-1"
             style={{ "--progress": `${progress}%` } as React.CSSProperties}
           />
-          <span className="min-w-16 text-right text-sm text-zinc-300 tabular-nums">
-            <span className="font-medium text-white">{label}</span> / {total}
+          <span className={`min-w-16 text-right text-sm tabular-nums ${t.muted}`}>
+            <span className={`font-medium ${t.root}`}>{label}</span> / {total}
           </span>
-          <button
-            onClick={() => flipRef.current?.flipNext()}
-            disabled={atEnd}
-            className="rounded-full p-1 text-zinc-300 hover:text-white disabled:opacity-30 sm:hidden"
-            aria-label="Trang sau"
-          >
+          <button onClick={() => viewRef.current?.next()} disabled={atEnd} className={`rounded-full p-1 disabled:opacity-30 sm:hidden ${t.tool}`} aria-label="Trang sau">
             <ChevronRight className="size-5" />
           </button>
         </div>
@@ -411,90 +477,34 @@ export default function Flipbook({ book }: { book: Book }) {
   );
 }
 
-// Chế độ 1 trang (mobile): thư viện lật lui bằng cách kéo trang trước vào từ "trang trái" ảo — vùng đó nằm ngoài
-// màn hình nên chỉ thấy một trang phẳng trượt vào, không có nếp cong giấy.
-// Thay bằng lật tới chạy ngược: về ngay trang trước ở trạng thái đã lật hẳn sang trái, rồi đưa mép trang trở lại
-// bên phải (phủ lên trang đang xem). Nhờ vậy lật lui trông y như lật tới, chỉ ngược chiều.
-// Thư viện có 3 đường lật lui, vá cả 3:
-//   • flipPrev: nút ‹, phím ←, lăn chuột, chạm nhanh, vuốt nhanh
-//   • flipController.flip: nhấn giữ rồi thả ở nửa trái
-//   • flipController.fold: kéo trang bằng ngón tay / chuột
-function patchPortraitBack(flip: PageFlip) {
-  const fc = flip.getFlipController();
-  const libFlipPrev = flip.flipPrev.bind(flip);
-  const libFlip = fc.flip.bind(fc);
-  const libFold = fc.fold.bind(fc);
+const noopSubscribe = () => () => {};
+const menuItem = "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm";
 
-  // Điểm chạm (tọa độ trong khung sách) có rơi vào vùng lật lui của thư viện không: 40% bên trái trang
-  const isBackPoint = (pos: { x: number }) => {
-    const rect = flip.getRender().getRect();
-    return pos.x - rect.left - rect.pageWidth <= (rect.pageWidth * 2) / 5;
-  };
-  const active = () => flip.getOrientation() === "portrait" && flip.getCurrentPageIndex() > 0;
-
-  flip.flipPrev = (corner = "top") => {
-    if (!active() || !flipBackPortrait(flip, corner)) libFlipPrev(corner);
-  };
-  fc.flip = (pos) => {
-    const rect = flip.getRender().getRect();
-    const corner = pos.y - rect.top >= rect.height / 2 ? "bottom" : "top";
-    if (!active() || !isBackPoint(pos) || !flipBackPortrait(flip, corner)) libFlip(pos);
-  };
-  fc.fold = (pos) => {
-    // Lần đầu chạm để kéo: đổi sang "lật tới trang trước"; các lần sau góc trang cứ bám theo ngón tay
-    if (!fc.calc && active() && isBackPoint(pos) && flip.getState() === "read") {
-      const index = flip.getCurrentPageIndex();
-      flip.turnToPage(index - 1);
-      if (!startForward(flip, pos.y)) {
-        flip.turnToPage(index);
-        return libFold(pos);
-      }
-    }
-    libFold(pos);
-  };
+function Logo({ src, href }: { src: string; href: string }) {
+  // eslint-disable-next-line @next/next/no-img-element
+  const img = <img src={src} alt="Logo" className="h-7 max-w-16 object-contain sm:h-8 sm:max-w-36" />;
+  const url = href.trim() ? (/^[a-z][a-z0-9+.-]*:/i.test(href.trim()) ? href.trim() : `https://${href.trim()}`) : null;
+  return url ? (
+    <a href={url} target="_blank" rel="noreferrer" className="shrink-0 px-1">
+      {img}
+    </a>
+  ) : (
+    <span className="shrink-0 px-1">{img}</span>
+  );
 }
-
-// Bắt đầu một lần lật tới từ mép phải (giống flipNext của thư viện) để trang hiện tại làm trang đang lật
-function startForward(flip: PageFlip, y: number) {
-  const fc = flip.getFlipController();
-  const rect = flip.getRender().getRect();
-  return fc.start({ x: rect.left + rect.pageWidth * 2 - 10, y }) && !!fc.calc;
-}
-
-function flipBackPortrait(flip: PageFlip, corner: "top" | "bottom") {
-  const index = flip.getCurrentPageIndex();
-  if (index <= 0 || flip.getState() !== "read") return false;
-  const fc = flip.getFlipController();
-  const rect = flip.getRender().getRect();
-
-  flip.turnToPage(index - 1);
-  if (!startForward(flip, rect.top + (corner === "top" ? 1 : rect.height - 2)) || !fc.calc) {
-    flip.turnToPage(index);
-    return false;
-  }
-  fc.setState("flipping");
-  // Ngược đường đi của flipNext: từ vị trí đã lật hẳn (-pageWidth) về gần góc phải
-  const margin = rect.height / 10;
-  const from = { x: -rect.pageWidth, y: corner === "bottom" ? rect.height : 0 };
-  const to = { x: rect.pageWidth - margin, y: corner === "bottom" ? rect.height - margin : margin };
-  fc.calc.calc(from);
-  fc.animateFlippingTo(from, to, false);
-  return true;
-}
-
-const toolClass =
-  "flex size-9 items-center justify-center rounded-lg text-zinc-300 transition hover:bg-white/10 hover:text-white";
 
 function ToolButton({
   label,
   active,
-  className = "",
+  className,
+  activeClass = "",
   children,
   onClick,
 }: {
   label: string;
   active?: boolean;
-  className?: string;
+  className: string;
+  activeClass?: string;
   children: React.ReactNode;
   onClick: () => void;
 }) {
@@ -505,14 +515,14 @@ function ToolButton({
       aria-label={label}
       aria-pressed={active}
       onClick={onClick}
-      className={`${toolClass} ${active ? "bg-white/15 text-white" : ""} ${className}`}
+      className={`${className} ${active ? activeClass : ""}`}
     >
       {children}
     </button>
   );
 }
 
-function NavButton({ side, disabled, onClick }: { side: "left" | "right"; disabled: boolean; onClick: () => void }) {
+function NavButton({ side, disabled, onClick, className }: { side: "left" | "right"; disabled: boolean; onClick: () => void; className: string }) {
   const Icon = side === "left" ? ChevronLeft : ChevronRight;
   return (
     <button
@@ -520,7 +530,7 @@ function NavButton({ side, disabled, onClick }: { side: "left" | "right"; disabl
       onClick={onClick}
       disabled={disabled}
       aria-label={side === "left" ? "Trang trước" : "Trang sau"}
-      className={`absolute top-1/2 z-10 hidden size-12 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white ring-1 ring-white/10 backdrop-blur transition hover:scale-105 hover:bg-white/20 disabled:pointer-events-none disabled:opacity-0 sm:flex ${
+      className={`absolute top-1/2 z-10 hidden size-12 -translate-y-1/2 items-center justify-center rounded-full ring-1 backdrop-blur transition hover:scale-105 disabled:pointer-events-none disabled:opacity-0 sm:flex ${className} ${
         side === "left" ? "left-4" : "right-4"
       }`}
     >

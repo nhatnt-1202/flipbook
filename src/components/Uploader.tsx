@@ -4,19 +4,18 @@ import { Check, Copy, ExternalLink, FileText, Loader2, RotateCcw, UploadCloud, X
 import Link from "next/link";
 import { useRef, useState } from "react";
 import { nanoid } from "nanoid";
-import { BUCKET, bookPath, pageUrl, supabase, type Book } from "@/lib/supabase";
-import { renderPdf } from "@/lib/pdf";
+import { BUCKET, bookPath, pageUrl, removeBookFiles, supabase, writeTexts, type Book, type NewBook } from "@/lib/supabase";
+import { importPages, isImage, isPdf } from "@/lib/importPages";
 import { useToast } from "@/components/Toast";
 
 // Gói free của Supabase giới hạn 50 MB/file; PDF lớn hơn vẫn tạo flipbook, chỉ không lưu bản gốc để tải về.
-const MAX_PDF_BYTES = 50 * 1024 * 1024;
-const UPLOAD_CONCURRENCY = 4;
+export const MAX_PDF_BYTES = 50 * 1024 * 1024;
 
 type Status =
   | { phase: "idle" }
-  | { phase: "working"; file: File; label: string; pct: number }
+  | { phase: "working"; files: File[]; label: string; pct: number }
   | { phase: "done"; book: Book }
-  | { phase: "error"; file: File | null; message: string };
+  | { phase: "error"; files: File[] | null; message: string };
 
 export function formatBytes(n: number) {
   if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
@@ -34,56 +33,45 @@ export default function Uploader({ onDone }: { onDone: (book: Book) => void }) {
   const notify = useToast();
   const busy = status.phase === "working";
 
-  async function upload(path: string, body: Blob, contentType: string) {
-    const { error } = await supabase.storage.from(BUCKET).upload(path, body, { contentType, upsert: true });
-    if (error) throw new Error(`Upload ${path} thất bại: ${error.message}`);
-  }
-
-  async function handleFile(file: File) {
-    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-      setStatus({ phase: "error", file: null, message: "File này không phải PDF. Vui lòng chọn file có đuôi .pdf" });
+  async function handleFiles(list: File[]) {
+    const doc = list.find(isPdf);
+    const images = list.filter(isImage).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    if (!doc && !images.length) {
+      setStatus({ phase: "error", files: null, message: "Chỉ hỗ trợ PDF hoặc ảnh (JPG, PNG, WebP)." });
       return;
     }
-
+    // Có PDF thì dùng PDF (1 file); không thì ghép các ảnh thành sách theo thứ tự tên file
+    const files = doc ? [doc] : images;
     const id = nanoid(10);
-    const title = file.name.replace(/\.pdf$/i, "");
-    const uploaded: string[] = [];
-    const pending = new Set<Promise<void>>();
-    let size = { width: 0, height: 0 };
-
-    const track = (path: string, body: Blob, type: string) => {
-      const p = upload(path, body, type).then(() => {
-        uploaded.push(path);
-      });
-      pending.add(p);
-      p.finally(() => pending.delete(p)).catch(() => {});
-    };
+    const title = (doc ?? images[0]).name.replace(/\.[^.]+$/, "");
+    const progress = (label: string, pct: number) => setStatus({ phase: "working", files, label, pct });
 
     try {
-      setStatus({ phase: "working", file, label: "Đang đọc PDF…", pct: 2 });
+      progress("Đang chuẩn bị…", 1);
+      const result = await importPages(id, files, progress);
 
-      const hasPdf = file.size <= MAX_PDF_BYTES;
-      if (hasPdf) track(`${id}/source.pdf`, file, "application/pdf");
+      const hasPdf = !!result.pdf && result.pdf.size <= MAX_PDF_BYTES;
+      if (hasPdf) {
+        const { error } = await supabase.storage
+          .from(BUCKET)
+          .upload(`${id}/source.pdf`, result.pdf!, { contentType: "application/pdf", upsert: true });
+        if (error) throw new Error(`Upload PDF gốc thất bại: ${error.message}`);
+      }
+      // Chữ từng trang cho tìm kiếm / SEO; PDF scan hoặc sách từ ảnh thì không có chữ
+      const hasText = Object.keys(result.texts).length > 0;
+      if (hasText) await writeTexts(id, result.texts);
 
-      const { total, ext } = await renderPdf(file, async (page, total) => {
-        if (page.n === 1) size = { width: page.width, height: page.height };
-        track(`${id}/${page.n}.${page.blob.type === "image/webp" ? "webp" : "jpg"}`, page.blob, page.blob.type);
-        setStatus({ phase: "working", file, label: `Đang xử lý trang ${page.n} / ${total}`, pct: 2 + (page.n / total) * 93 });
-        // Giới hạn số upload chạy song song để không giữ quá nhiều ảnh trong RAM
-        while (pending.size >= UPLOAD_CONCURRENCY) await Promise.race(pending);
-      });
-
-      setStatus({ phase: "working", file, label: "Đang hoàn tất…", pct: 97 });
-      await Promise.all(pending);
-
-      const book: Omit<Book, "created_at" | "slug"> = {
+      const book: NewBook = {
         id,
         title,
-        page_count: total,
-        page_width: size.width,
-        page_height: size.height,
-        image_ext: ext,
+        page_count: result.files.length,
+        page_width: result.size.w,
+        page_height: result.size.h,
+        image_ext: result.files[0].split(".").pop()!,
         has_pdf: hasPdf,
+        has_text: hasText,
+        elements: result.links,
+        pages: result.files,
       };
       const { data, error } = await supabase.from("books").insert(book).select().single();
       if (error) throw new Error(`Lưu thông tin sách thất bại: ${error.message}`);
@@ -91,9 +79,9 @@ export default function Uploader({ onDone }: { onDone: (book: Book) => void }) {
       setStatus({ phase: "done", book: data as Book });
       onDone(data as Book);
     } catch (e) {
-      await Promise.allSettled(pending);
-      if (uploaded.length) await supabase.storage.from(BUCKET).remove(uploaded);
-      setStatus({ phase: "error", file, message: e instanceof Error ? e.message : String(e) });
+      // importPages đã tự dọn ảnh trang khi lỗi; còn lại PDF gốc / text.json nếu lỗi ở bước sau
+      await removeBookFiles(id).catch(() => {});
+      setStatus({ phase: "error", files, message: e instanceof Error ? e.message : String(e) });
     } finally {
       if (inputRef.current) inputRef.current.value = "";
     }
@@ -103,11 +91,12 @@ export default function Uploader({ onDone }: { onDone: (book: Book) => void }) {
     <input
       ref={inputRef}
       type="file"
-      accept="application/pdf,.pdf"
+      accept="application/pdf,.pdf,image/*"
+      multiple
       className="hidden"
       onChange={(e) => {
-        const file = e.target.files?.[0];
-        if (file) handleFile(file);
+        const files = Array.from(e.target.files ?? []);
+        if (files.length) handleFiles(files);
       }}
     />
   );
@@ -120,8 +109,10 @@ export default function Uploader({ onDone }: { onDone: (book: Book) => void }) {
         <div className="flex items-center gap-4">
           <FileIcon />
           <div className="min-w-0 flex-1">
-            <p className="truncate font-medium">{status.file.name}</p>
-            <p className="text-sm text-stone-500">{formatBytes(status.file.size)}</p>
+            <p className="truncate font-medium">
+              {status.files.length > 1 ? `${status.files.length} ảnh` : status.files[0].name}
+            </p>
+            <p className="text-sm text-stone-500">{formatBytes(status.files.reduce((n, f) => n + f.size, 0))}</p>
           </div>
           <Loader2 className="size-5 shrink-0 animate-spin text-brand-600 dark:text-brand-400" />
         </div>
@@ -207,8 +198,8 @@ export default function Uploader({ onDone }: { onDone: (book: Book) => void }) {
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
-          const file = e.dataTransfer.files[0];
-          if (file && !busy) handleFile(file);
+          const files = Array.from(e.dataTransfer.files);
+          if (files.length && !busy) handleFiles(files);
         }}
         className={`group relative w-full overflow-hidden rounded-2xl border-2 border-dashed px-6 py-14 text-center transition-all sm:py-16 ${
           dragging
@@ -225,11 +216,11 @@ export default function Uploader({ onDone }: { onDone: (book: Book) => void }) {
         >
           <UploadCloud className="size-7" />
         </div>
-        <p className="mt-5 text-lg font-semibold">{dragging ? "Thả file vào đây" : "Kéo thả file PDF vào đây"}</p>
+        <p className="mt-5 text-lg font-semibold">{dragging ? "Thả file vào đây" : "Kéo thả file PDF hoặc ảnh vào đây"}</p>
         <p className="mt-1 text-sm text-stone-500">
           hoặc <span className="font-medium text-brand-600 underline-offset-2 group-hover:underline dark:text-brand-400">chọn file từ máy</span>
         </p>
-        <p className="mt-4 text-xs text-stone-400">Chỉ hỗ trợ PDF · Xử lý ngay trên trình duyệt</p>
+        <p className="mt-4 text-xs text-stone-400">PDF, hoặc nhiều ảnh JPG/PNG (xếp theo tên file) · Xử lý ngay trên trình duyệt</p>
       </button>
       {input}
 
@@ -240,9 +231,9 @@ export default function Uploader({ onDone }: { onDone: (book: Book) => void }) {
             <p className="font-medium">Không tạo được flipbook</p>
             <p className="mt-0.5 opacity-80">{status.message}</p>
           </div>
-          {status.file && (
+          {status.files && (
             <button
-              onClick={() => handleFile(status.file!)}
+              onClick={() => handleFiles(status.files!)}
               className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium hover:bg-red-100 dark:hover:bg-red-500/20"
             >
               <RotateCcw className="size-3.5" /> Thử lại

@@ -61,7 +61,11 @@ body {
   appearance: none;
   height: 4px;
   border-radius: 999px;
-  background: linear-gradient(to right, #a5b4fc var(--progress, 0%), rgb(255 255 255 / 0.18) var(--progress, 0%));
+  background: linear-gradient(
+    to right,
+    var(--accent, #a5b4fc) var(--progress, 0%),
+    var(--slider-track, rgb(255 255 255 / 0.18)) var(--progress, 0%)
+  );
   cursor: pointer;
 }
 .page-slider::-webkit-slider-thumb {
@@ -78,4 +82,37 @@ body {
   border: 0;
   border-radius: 999px;
   background: #fff;
+}
+
+/* Hiệu ứng hotspot của phần tử tương tác (elements.ts: Effect). Dùng --fx (màu) nếu có. */
+.fx-pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  animation: fx-pulse 1.8s ease-out infinite;
+}
+.fx-pulse:has(.rounded-full)::after { border-radius: 999px; }
+@keyframes fx-pulse {
+  0%   { box-shadow: 0 0 0 0 rgb(255 255 255 / 0.75), 0 0 0 0 rgb(99 102 241 / 0.6); }
+  100% { box-shadow: 0 0 0 10px rgb(255 255 255 / 0), 0 0 0 18px rgb(99 102 241 / 0); }
+}
+.fx-glow { animation: fx-glow 2s ease-in-out infinite; }
+@keyframes fx-glow {
+  0%, 100% { filter: drop-shadow(0 0 0 rgb(255 255 255 / 0)); }
+  50%      { filter: drop-shadow(0 0 8px rgb(255 255 255 / 0.95)) drop-shadow(0 0 14px rgb(129 140 248 / 0.8)); }
+}
+.fx-blink { animation: fx-blink 1.4s ease-in-out infinite; }
+@keyframes fx-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+.fx-bounce { animation: fx-bounce 1.6s ease-in-out infinite; }
+@keyframes fx-bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30%           { transform: translateY(-12%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-pulse::after, .fx-glow, .fx-blink, .fx-bounce { animation: none; }
 }

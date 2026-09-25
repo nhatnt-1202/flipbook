@@ -103,7 +103,8 @@ export function prepareFlipSound() {
   UNLOCK_EVENTS.forEach((type) => window.addEventListener(type, unlock, true));
 }
 
-export function playFlipSound() {
+// soft: cùng đoạn ghi âm nhưng chậm, trầm và nhỏ hơn (giấy dày / bìa mềm)
+export function playFlipSound(variant: "paper" | "soft" = "paper") {
   let ac: AudioContext;
   try {
     ac = audio();
@@ -113,7 +114,7 @@ export function playFlipSound() {
   if (!buffers.length) {
     // Lần lật đầu tiên ngay sau khi mở khóa: dữ liệu có thể chưa giải mã xong, chờ một chút rồi phát
     const at = Date.now();
-    decoded?.then(() => buffers.length && Date.now() - at < 400 && playFlipSound());
+    decoded?.then(() => buffers.length && Date.now() - at < 400 && playFlipSound(variant));
     return;
   }
 
@@ -124,11 +125,19 @@ export function playFlipSound() {
 
   const src = ac.createBufferSource();
   src.buffer = buffers[v];
-  src.playbackRate.value = 0.96 + Math.random() * 0.08;
+  const soft = variant === "soft";
+  src.playbackRate.value = (soft ? 0.8 : 0.96) + Math.random() * 0.08;
 
   const gain = ac.createGain();
-  gain.gain.value = 0.7;
+  gain.gain.value = soft ? 0.5 : 0.7;
 
-  src.connect(gain).connect(ac.destination);
+  if (soft) {
+    const lowpass = ac.createBiquadFilter();
+    lowpass.type = "lowpass";
+    lowpass.frequency.value = 1600;
+    src.connect(lowpass).connect(gain).connect(ac.destination);
+  } else {
+    src.connect(gain).connect(ac.destination);
+  }
   src.start();
 }

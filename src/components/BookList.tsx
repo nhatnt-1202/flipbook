@@ -1,9 +1,9 @@
 "use client";
 
-import { BookOpen, ExternalLink, Link2, PencilLine, Trash2 } from "lucide-react";
+import { BookOpen, ExternalLink, Link2, PencilLine, PencilRuler, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
-import { BUCKET, bookPath, pageUrl, supabase, type Book } from "@/lib/supabase";
+import { bookPath, pageUrl, removeBookFiles, supabase, type Book } from "@/lib/supabase";
 import { shareUrl } from "@/components/Uploader";
 import { useToast } from "@/components/Toast";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -33,13 +33,11 @@ export default function BookList({
   async function confirmDelete() {
     if (!target) return;
     setDeleting(true);
-    const paths = Array.from({ length: target.page_count }, (_, i) => `${target.id}/${i + 1}.${target.image_ext}`);
-    if (target.has_pdf) paths.push(`${target.id}/source.pdf`);
     const { error } = await supabase.from("books").delete().eq("id", target.id);
     if (error) {
       notify(`Xóa thất bại: ${error.message}`, "error");
     } else {
-      await supabase.storage.from(BUCKET).remove(paths);
+      await removeBookFiles(target.id);
       onDeleted(target.id);
       notify("Đã xóa sách");
     }
@@ -85,6 +83,14 @@ export default function BookList({
             </div>
 
             <div className="mt-2 flex gap-0.5 transition sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100">
+              <Link
+                href={`/edit/${b.id}`}
+                title="Chỉnh sửa"
+                aria-label="Chỉnh sửa"
+                className="rounded-lg p-2 text-stone-500 transition hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-white/5 dark:hover:text-white"
+              >
+                <PencilRuler className="size-4" />
+              </Link>
               <IconButton label="Copy link chia sẻ" onClick={() => copy(b)}>
                 <Link2 className="size-4" />
               </IconButton>

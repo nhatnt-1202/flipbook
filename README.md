@@ -1,6 +1,6 @@
 # Flipbook
 
-Upload PDF → sách lật trang → chia sẻ link.
+Upload PDF / ảnh → sách lật trang → chỉnh sửa (link, video, sản phẩm...) → chia sẻ link.
 
 - **Root** (1 tài khoản duy nhất): đăng nhập ở trang chủ để xem thư viện, upload, xóa.
 - **Người có link** `/view/{id}`: chỉ xem được đúng cuốn sách đó, không vào được thư viện hay sách khác.
@@ -8,7 +8,7 @@ Upload PDF → sách lật trang → chia sẻ link.
 - **Next.js 16** + Tailwind
 - **pdf.js** render từng trang PDF thành ảnh WebP ngay trong trình duyệt lúc upload
 - **page-flip** (StPageFlip) cho hiệu ứng lật trang
-- **Supabase**: bảng `books` + Storage bucket `books`
+- **Supabase**: bảng `books`, `leads` + Storage bucket `books`
 
 ## Cài đặt
 
@@ -30,6 +30,8 @@ Upload PDF → sách lật trang → chia sẻ link.
    ```
    Mở http://localhost:3000
 
+Sau mỗi lần cập nhật code có đổi `supabase/schema.sql`, chạy lại schema (SQL Editor hoặc `npm run db:setup`). Script chỉ thêm cột / bảng / hàm, không xóa dữ liệu.
+
 ## Cấu trúc
 
 | File | Vai trò |
@@ -37,11 +39,17 @@ Upload PDF → sách lật trang → chia sẻ link.
 | `src/app/page.tsx` | Trang chủ (cần đăng nhập root): upload + danh sách tất cả sách + tìm kiếm |
 | `src/components/Login.tsx` | Form đăng nhập root (Supabase Auth) |
 | `src/app/view/[id]/page.tsx` | Trang xem flipbook (link share), có OG image là ảnh bìa |
-| `src/components/Uploader.tsx` | Render PDF → ảnh, upload lên Storage, lưu vào `books` |
-| `src/components/Flipbook.tsx` | Viewer lật trang, toolbar, phím ← → |
+| `src/components/Uploader.tsx` | Tạo sách mới từ PDF / ảnh |
+| `src/lib/importPages.ts` | Render file → ảnh trang, upload, tách chữ và link có sẵn trong PDF |
 | `src/lib/pdf.ts` | Chuyển PDF thành ảnh bằng pdf.js |
+| `src/components/Flipbook.tsx` | Khung viewer: toolbar, nền, theme, logo, nhạc nền, form lead |
+| `src/components/viewer/` | Renderer theo kiểu lật: `PageFlipView` (tạp chí, bìa cứng, album), `SlideView` (slider, coverflow, cards) |
+| `src/components/elements/` | Vẽ phần tử tương tác (link, video, ảnh, chữ, âm thanh, iframe, sản phẩm) — dùng chung viewer và editor |
+| `src/app/edit/[id]/page.tsx` | Editor (root) |
+| `src/components/editor/` | Canvas kéo thả, bảng thuộc tính, tab Thiết kế, quản lý trang, undo/redo, tự lưu |
+| `src/lib/elements.ts`, `src/lib/settings.ts` | Kiểu dữ liệu của `books.elements` và `books.settings` |
 
-Storage: `books/{id}/1.webp … n.webp` và `books/{id}/source.pdf`.
+Storage: `books/{id}/{file}.webp` (thứ tự theo cột `books.pages`; sách cũ là `1.webp … n.webp`), `source.pdf`, `text.json` (chữ từng trang), `assets/` (file upload trong editor).
 
 ## Lưu ý
 
