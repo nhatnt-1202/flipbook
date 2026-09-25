@@ -11,6 +11,8 @@ const MIN_PAGE_WIDTH = 300;
 // Số trang tải trước quanh trang hiện tại
 const PRELOAD_BEHIND = 2;
 const PRELOAD_AHEAD = 6;
+// Nhảy tới trang xa (link, thumbnail, thanh trượt): chờ ảnh trang đích tải xong tối đa chừng này rồi mới chuyển
+const JUMP_WAIT_MS = 1500;
 // Thời gian lật một trang (ms); hiệu ứng trượt bìa vào giữa dùng cùng thời gian để chạy đồng bộ
 export const FLIP_MS = 800;
 // Độ dày tối đa (px) của cạnh sách mỗi bên, kiểu bìa cứng
@@ -98,17 +100,65 @@ export default function PageFlipView({ book, settings, pageUrls, renderLayer, on
       layers.push(layer);
       return div;
     });
-    const ready = () => !cancelled && setReady((r) => ({ ...r, cover: true }));
-    imgs[0].onload = imgs[0].onerror = ready;
+    const load = (img: HTMLImageElement) => {
+      if (!img.src) img.src = img.dataset.src!;
+    };
+    const loaded = (img: HTMLImageElement) =>
+      img.complete
+        ? Promise.resolve()
+        : new Promise<void>((res) => {
+            img.addEventListener("load", () => res(), { once: true });
+            img.addEventListener("error", () => res(), { once: true });
+          });
 
     const preload = (index: number) => {
-      for (let i = Math.max(0, index - PRELOAD_BEHIND); i <= Math.min(imgs.length - 1, index + PRELOAD_AHEAD); i++) {
-        if (!imgs[i].src) imgs[i].src = imgs[i].dataset.src!;
+      for (let i = Math.max(0, index - PRELOAD_BEHIND); i <= Math.min(imgs.length - 1, index + PRELOAD_AHEAD); i++) load(imgs[i]);
+    };
+
+    // Sau khi hiện bìa, tải dần các trang còn lại (lần lượt, ưu tiên thấp) để nhảy trang xa không bị trắng
+    const loadRest = async () => {
+      for (const img of imgs) {
+        if (cancelled) return;
+        if (img.src) continue;
+        img.fetchPriority = "low";
+        load(img);
+        await loaded(img);
       }
     };
 
+    const ready = () => {
+      if (cancelled) return;
+      setReady((r) => ({ ...r, cover: true }));
+      loadRest();
+    };
+    imgs[0].onload = imgs[0].onerror = ready;
+
     fit();
     preload(0);
+
+    // Nhảy trang: tải trước các trang sẽ hiện (cả trang đôi bên cạnh), chờ xong hoặc hết JUMP_WAIT_MS rồi mới chuyển.
+    // Chỉ lần nhảy gần nhất được thực hiện (kéo thanh trượt liên tục).
+    let jump = 0;
+    const jumpTo = (i: number, animate: boolean) => {
+      const target = Math.max(0, Math.min(imgs.length - 1, i));
+      const id = ++jump;
+      // Các trang sẽ hiện tải trước với ưu tiên cao, rồi mới tới các trang lân cận
+      const shown = imgs.slice(Math.max(0, target - 1), target + 2);
+      for (const img of shown) {
+        if (!img.src) img.fetchPriority = "high";
+        load(img);
+      }
+      preload(target);
+      Promise.race([
+        Promise.all(shown.map(loaded)),
+        new Promise((res) => setTimeout(res, JUMP_WAIT_MS)),
+      ]).then(() => {
+        const flip = flipRef.current;
+        if (cancelled || id !== jump || !flip) return;
+        if (animate) flip.flip(target);
+        else flip.turnToPage(target);
+      });
+    };
 
     import("page-flip").then(({ PageFlip }) => {
       if (cancelled) return;
@@ -184,12 +234,11 @@ export default function PageFlipView({ book, settings, pageUrls, renderLayer, on
     const onResize = () => fit();
     window.addEventListener("resize", onResize);
 
-    const last = urls.length - 1;
     handleRef.current = {
       next: () => flipRef.current?.flipNext(),
       prev: () => flipRef.current?.flipPrev(),
-      goTo: (i) => flipRef.current?.turnToPage(Math.max(0, Math.min(last, i))),
-      flip: (i) => flipRef.current?.flip(Math.max(0, Math.min(last, i))),
+      goTo: (i) => jumpTo(i, false),
+      flip: (i) => jumpTo(i, true),
       busy: () => (flipRef.current?.getState() ?? "read") !== "read",
     };
 
