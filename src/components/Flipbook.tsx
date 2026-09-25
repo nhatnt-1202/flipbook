@@ -74,8 +74,6 @@ export default function Flipbook({ book, preview = false }: { book: Book; previe
   const [thumbsOpen, setThumbsOpen] = useState(false);
   const [popup, setPopup] = useState<ElementAction | null>(null);
   const [musicPlaying, setMusicPlaying] = useState(false);
-  // Trình duyệt chặn tự phát nhạc: hiện màn "Nhấn để mở sách", cú nhấn đó bật nhạc
-  const [musicPrompt, setMusicPrompt] = useState(false);
   const [leadPassed, setLeadPassed] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const muted = useSyncExternalStore(subscribeFlipSoundMuted, isFlipSoundMuted, () => false);
@@ -138,9 +136,7 @@ export default function Flipbook({ book, preview = false }: { book: Book; previe
       audio.play().then(stop, () => {});
     };
     events.forEach((e) => window.addEventListener(e, start, true));
-    audio.play().then(stop, (e: unknown) => {
-      if (e instanceof DOMException && e.name === "NotAllowedError") setMusicPrompt(true);
-    });
+    start();
     return stop;
   }, [musicSrc, musicVolume]);
 
@@ -429,25 +425,6 @@ export default function Flipbook({ book, preview = false }: { book: Book; previe
         )}
       </div>
 
-      {musicPrompt && (
-        <button
-          type="button"
-          onClick={() => {
-            setMusicPrompt(false);
-            musicRef.current?.play().catch(() => {});
-          }}
-          className="absolute inset-0 z-50 flex cursor-pointer flex-col items-center justify-center gap-4 bg-black/45 text-white backdrop-blur-[2px] [animation:fade-in_.3s]"
-        >
-          <span
-            className="flex size-20 items-center justify-center rounded-full bg-white/15 ring-1 ring-white/30 backdrop-blur-md transition hover:scale-105"
-            style={{ boxShadow: "0 0 40px -6px var(--accent)" }}
-          >
-            <Music className="size-8" />
-          </span>
-          <span className="text-lg font-medium">Nhấn để mở sách</span>
-          <span className="text-sm text-white/70">Sách có nhạc nền</span>
-        </button>
-      )}
       <ElementPopup action={popup} onClose={closePopup} />
       {gate && (
         <LeadGate
@@ -465,10 +442,7 @@ export default function Flipbook({ book, preview = false }: { book: Book; previe
           src={musicSrc}
           loop
           preload="none"
-          onPlay={() => {
-            setMusicPlaying(true);
-            setMusicPrompt(false);
-          }}
+          onPlay={() => setMusicPlaying(true)}
           onPause={() => setMusicPlaying(false)}
         />
       )}
